@@ -64,7 +64,12 @@ async function sendAvitoNotification(chat) {
     text += `🔗 [Открыть объявление](${itemUrl})\n`;
   }
 
-  text += `\n👉 Ответить в приложении Авито`;
+  const lastMsgText = chat.last_message?.content?.text;
+  if (lastMsgText) {
+    text += `\n💬 *Сообщение:*\n${escapeMarkdown(lastMsgText)}\n`;
+  }
+
+  text += `\n↩️ /reply ${chat.id} текст`;
 
   // Пробуем получить фото товара (этот эндпоинт не требует подписки)
   let photoUrl = null;
