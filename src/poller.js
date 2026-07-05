@@ -1,36 +1,51 @@
 const fs = require('fs');
 const path = require('path');
 const avito = require('./avito');
-const { sendNotification, createTopic, closeTopic, reopenTopic } = require('./bot');
+const { sendNotification, deleteCard, createTopic } = require('./bot');
 
 const POLL_INTERVAL = 30_000;
-const TOPICS_FILE = path.join(__dirname, '..', 'topics.json');
+const STATE_FILE = path.join(__dirname, '..', 'state.json');
+const TOPIC_NAME = '⏳ Ждут ответа';
 
-// chat_id -> { threadId, name, closed, lastMsgTime }
-// Персистим на диск, чтобы переживать рестарт (не пересоздавать темы).
-const topicByChat = loadTopics();
+// state = { topicId, cards: { chat_id: { messageId, lastMsgTime } } }
+// Один топик «Ждут ответа», внутри — по одной карточке на неотвеченный чат.
+// Персистим, чтобы переживать рестарт (не пересоздавать топик/карточки).
+let state = loadState();
 let firstPoll = true;
 
-function loadTopics() {
+function loadState() {
   try {
-    return new Map(Object.entries(JSON.parse(fs.readFileSync(TOPICS_FILE, 'utf8'))));
+    const s = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
+    return { topicId: s.topicId || null, cards: s.cards || {} };
   } catch {
-    return new Map();
+    return { topicId: null, cards: {} };
   }
 }
 
-function persistTopics() {
+function persistState() {
   try {
-    fs.writeFileSync(TOPICS_FILE, JSON.stringify(Object.fromEntries(topicByChat)));
+    fs.writeFileSync(STATE_FILE, JSON.stringify(state));
   } catch (err) {
-    console.error('topics persist error:', err.message);
+    console.error('state persist error:', err.message);
   }
+}
+
+// Гарантируем единственный топик «Ждут ответа»
+async function ensureTopic() {
+  if (state.topicId) return state.topicId;
+  const id = await createTopic(TOPIC_NAME);
+  if (id) {
+    state.topicId = id;
+    persistState();
+  }
+  return state.topicId; // null при сбое — карточки временно уйдут в General
 }
 
 async function poll() {
   try {
     const chats = await avito.getChats(10);
     const myUserId = String(process.env.AVITO_USER_ID);
+    await ensureTopic();
 
     for (const chat of chats) {
       const lastMsg = chat.last_message;
@@ -38,18 +53,19 @@ async function poll() {
 
       const isFromMe = String(lastMsg.author_id) === myUserId;
       const msgTime = lastMsg.created * 1000;
-      const topic = topicByChat.get(chat.id);
+      const card = state.cards[chat.id];
 
       if (isFromMe) {
-        // Ты ответил в Авито → закрыть тему (диалог обработан)
-        if (topic && !topic.closed) await closeChatTopic(chat.id);
+        // Ты ответил в Авито → убрать карточку из топика (диалог обработан)
+        if (card) await clearCard(chat.id);
         continue;
       }
 
-      // Сообщение от клиента. Пропускаем, если это же сообщение уже обработано.
-      if (topic && topic.lastMsgTime >= msgTime) continue;
+      // Сообщение клиента. Пропускаем, если это же сообщение уже показано.
+      if (card && card.lastMsgTime >= msgTime) continue;
 
-      await handleClientMessage(chat, msgTime);
+      // Первое сообщение по чату → со звуком; повтор/популяция при старте → тихо.
+      await refreshCard(chat, msgTime, firstPoll || Boolean(card));
     }
   } catch (err) {
     console.error('Poll error:', err.message);
@@ -57,60 +73,28 @@ async function poll() {
   firstPoll = false;
 }
 
-// Новое сообщение клиента → в его тему (создаём/переоткрываем при необходимости)
-async function handleClientMessage(chat, msgTime) {
-  let topic = topicByChat.get(chat.id);
-
-  if (!topic) {
-    const name = buildTopicName(chat);
-    const threadId = await createTopic(name);
-    if (!threadId) return; // тему создать не удалось — не сохраняем, повторим на следующем поллинге
-    topic = { threadId, name, closed: false, lastMsgTime: 0 };
-    topicByChat.set(chat.id, topic);
+// Одна карточка на чат в топике. Новое сообщение → пересоздаём карточку внизу.
+async function refreshCard(chat, msgTime, silent) {
+  const old = state.cards[chat.id];
+  const { text, photo, replyMarkup } = await buildCard(chat);
+  const newId = await sendNotification(text, photo, replyMarkup, {
+    silent,
+    threadId: state.topicId,
+  });
+  if (newId) {
+    state.cards[chat.id] = { messageId: newId, lastMsgTime: msgTime };
+    persistState();
+    if (old && old.messageId !== newId) deleteCard(old.messageId).catch(() => {});
   }
-
-  // Новая тема или возврат клиента после твоего ответа → полная карточка + звук.
-  const wasClosedOrNew = topic.closed || topic.lastMsgTime === 0;
-
-  if (topic.closed && topic.threadId) {
-    await reopenTopic(topic.threadId);
-    topic.closed = false;
-  }
-
-  if (wasClosedOrNew) {
-    const { text, photo, replyMarkup } = await buildCard(chat);
-    await sendNotification(text, photo, replyMarkup, {
-      threadId: topic.threadId,
-      silent: firstPoll, // популяция при старте — тихо; обычный новый диалог — со звуком
-    });
-  } else {
-    // Идущий диалог — короткий тихий бамп в ту же тему
-    const when = chat.last_message?.created ? absoluteTime(chat.last_message.created) : '';
-    const line = `💬 *Ещё сообщение*${when ? ` · ${escapeMarkdown(when)}` : ''}`;
-    await sendNotification(line, null, null, { threadId: topic.threadId, silent: true });
-  }
-
-  topic.lastMsgTime = msgTime;
-  persistTopics();
 }
 
-// Ты ответил → закрываем тему чата
-async function closeChatTopic(chatId) {
-  const topic = topicByChat.get(chatId);
-  if (!topic || topic.closed) return;
-  if (topic.threadId) await closeTopic(topic.threadId);
-  topic.closed = true;
-  persistTopics();
-}
-
-// Имя темы: «Павел · Кардиган-куртка» (обычный текст, ≤128 символов)
-function buildTopicName(chat) {
-  const myUserId = String(process.env.AVITO_USER_ID);
-  const buyer = chat.users?.find(u => String(u.id) !== myUserId);
-  const item = chat.context?.value;
-  let name = `${buyer?.name || 'Покупатель'} · ${item?.title || 'Товар'}`;
-  if (name.length > 100) name = `${name.slice(0, 99)}…`;
-  return name;
+// Ты ответил → удаляем карточку чата из топика
+async function clearCard(chatId) {
+  const card = state.cards[chatId];
+  if (!card) return;
+  await deleteCard(card.messageId);
+  delete state.cards[chatId];
+  persistState();
 }
 
 function escapeMarkdown(text) {
@@ -191,7 +175,7 @@ function statusLabel(status) {
   return STATUS_LABELS[status] || status;
 }
 
-// Собирает карточку диалога: { text, photo, replyMarkup }
+// Собирает карточку неотвеченного диалога: { text, photo, replyMarkup }
 async function buildCard(chat) {
   const item = chat.context?.value;
   const myUserId = String(process.env.AVITO_USER_ID);
@@ -202,8 +186,7 @@ async function buildCard(chat) {
   const itemPrice = item ? escapeMarkdown(item.price_string || '') : null;
   const itemUrl = item?.url ? `https://avito.ru${item.url.replace('https://avito.ru', '')}` : null;
 
-  let text = `💬 *Новое сообщение на Авито*\n\n`;
-  text += `👤 *Покупатель:* ${buyerName}\n`;
+  let text = `👤 *${buyerName}*\n`;
 
   if (itemTitle) {
     text += `📦 *Товар:* ${itemTitle}`;
@@ -222,7 +205,6 @@ async function buildCard(chat) {
     }
   }
 
-  // Мета диалога — всё доступно без подписки на messenger-API
   const city = item?.location?.title;
   if (city) text += `📍 *Город:* ${escapeMarkdown(city)}\n`;
   if (statusText) text += `🏷 *Объявление:* ${escapeMarkdown(statusText)}\n`;
@@ -264,10 +246,11 @@ async function buildCard(chat) {
   return { text, photo, replyMarkup };
 }
 
-// Совместимость с тестами: отправить карточку по чату вручную
+// Совместимость с тестами: вручную положить карточку по чату в топик
 async function sendAvitoNotification(chat) {
+  await ensureTopic();
   const msgTime = (chat.last_message?.created || 0) * 1000 || Date.now();
-  await handleClientMessage(chat, msgTime);
+  await refreshCard(chat, msgTime, false);
 }
 
 function startPolling() {

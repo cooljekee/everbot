@@ -119,4 +119,13 @@ async function reopenTopic(threadId) {
   }
 }
 
-module.exports = { bot, sendNotification, deleteCard, createTopic, closeTopic, reopenTopic };
+async function deleteTopic(threadId) {
+  if (!threadId) return;
+  try {
+    await bot.telegram.deleteForumTopic(CHAT_ID, threadId);
+  } catch (err) {
+    console.error('deleteForumTopic error:', err.message);
+  }
+}
+
+module.exports = { bot, sendNotification, deleteCard, createTopic, closeTopic, reopenTopic, deleteTopic };
