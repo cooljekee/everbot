@@ -53,7 +53,7 @@ async function sendNotification(text, photo = null, replyMarkup = null, opts = {
         ...thread,
       });
     }
-    return msg && msg.message_id ? msg.message_id : null;
+    return msg && msg.message_id ? { messageId: msg.message_id, isPhoto: Boolean(photo) } : null;
   } catch (err) {
     console.error('Ошибка отправки в Telegram:', err.message);
     // Фолбэк: фото не ушло или битая разметка — шлём текстом, чтобы
@@ -67,11 +67,37 @@ async function sendNotification(text, photo = null, replyMarkup = null, opts = {
         ...silent,
         ...thread,
       });
-      return msg && msg.message_id ? msg.message_id : null;
+      return msg && msg.message_id ? { messageId: msg.message_id, isPhoto: false } : null;
     } catch (err2) {
       console.error('Повторная отправка тоже упала:', err2.message);
       return null;
     }
+  }
+}
+
+// Редактирует уже отправленную карточку на месте (не двигает её).
+async function editCard(messageId, text, replyMarkup, isPhoto) {
+  const markup = replyMarkup ? { reply_markup: replyMarkup } : {};
+  try {
+    if (isPhoto) {
+      await bot.telegram.editMessageCaption(CHAT_ID, messageId, undefined, text, {
+        parse_mode: 'MarkdownV2',
+        ...markup,
+      });
+    } else {
+      await bot.telegram.editMessageText(CHAT_ID, messageId, undefined, text, {
+        parse_mode: 'MarkdownV2',
+        disable_web_page_preview: true,
+        ...markup,
+      });
+    }
+    return true;
+  } catch (err) {
+    // «message is not modified» / старое сообщение / удалено — не критично
+    if (!String(err.message).includes('not modified')) {
+      console.error('editCard error:', err.message);
+    }
+    return false;
   }
 }
 
@@ -128,4 +154,4 @@ async function deleteTopic(threadId) {
   }
 }
 
-module.exports = { bot, sendNotification, deleteCard, createTopic, closeTopic, reopenTopic, deleteTopic };
+module.exports = { bot, sendNotification, deleteCard, editCard, createTopic, closeTopic, reopenTopic, deleteTopic };
