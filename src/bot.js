@@ -45,12 +45,17 @@ async function sendNotification(text, photoUrl = null, replyMarkup = null) {
     }
   } catch (err) {
     console.error('Ошибка отправки в Telegram:', err.message);
-    // Повторная попытка без markdown если ошибка парсинга
-    if (err.message.includes('parse')) {
-      await bot.telegram.sendMessage(CHAT_ID, text.replace(/[*_`[\]]/g, ''), {
+    // Фолбэк: фото не ушло или битая разметка — шлём текстом, чтобы
+    // уведомление не потерялось.
+    const parseErr = err.message.includes('parse');
+    try {
+      await bot.telegram.sendMessage(CHAT_ID, parseErr ? text.replace(/[*_`[\]]/g, '') : text, {
+        ...(parseErr ? {} : { parse_mode: 'MarkdownV2' }),
         disable_web_page_preview: true,
         ...markup,
       });
+    } catch (err2) {
+      console.error('Повторная отправка тоже упала:', err2.message);
     }
   }
 }

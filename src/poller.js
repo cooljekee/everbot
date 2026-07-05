@@ -46,20 +46,73 @@ function formatDate(sec) {
   return new Date(sec * 1000).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' });
 }
 
-// Относительное время: «только что» / «5 мин назад» / «сегодня 14:20» / «вчера 09:15» / «12 мая 14:20»
-function formatWhen(sec) {
-  const then = sec * 1000;
-  const diffMin = Math.round((Date.now() - then) / 60000);
-  if (diffMin < 1) return 'только что';
-  if (diffMin < 60) return `${diffMin} мин назад`;
-  const d = new Date(then);
-  const today = new Date();
+// Русское склонение: plural(3, 'день', 'дня', 'дней') → «3 дня»
+function plural(n, one, few, many) {
+  const m10 = n % 10;
+  const m100 = n % 100;
+  let form = many;
+  if (m10 === 1 && m100 !== 11) form = one;
+  else if (m10 >= 2 && m10 <= 4 && (m100 < 10 || m100 >= 20)) form = few;
+  return `${n} ${form}`;
+}
+
+// Относительно: «только что» / «5 мин назад» / «2 ч назад» / «3 дн назад»
+function relativeAgo(sec) {
+  const min = Math.max(0, Math.round((Date.now() - sec * 1000) / 60000));
+  if (min < 1) return 'только что';
+  if (min < 60) return `${min} мин назад`;
+  const h = Math.round(min / 60);
+  if (h < 24) return `${h} ч назад`;
+  return `${Math.round(h / 24)} дн назад`;
+}
+
+// Абсолютно: «сегодня 14:20» / «вчера 09:15» / «12 мая 14:20»
+function absoluteTime(sec) {
+  const d = new Date(sec * 1000);
   const time = d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+  const today = new Date();
   if (d.toDateString() === today.toDateString()) return `сегодня ${time}`;
   const y = new Date(today);
   y.setDate(today.getDate() - 1);
   if (d.toDateString() === y.toDateString()) return `вчера ${time}`;
   return `${d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' })} ${time}`;
+}
+
+// Длительность диалога от даты старта: «3 дня» / «5 часов» / «20 минут»
+function formatDuration(fromSec) {
+  const min = Math.max(0, Math.round((Date.now() - fromSec * 1000) / 60000));
+  if (min < 60) return plural(min, 'минуту', 'минуты', 'минут');
+  const h = Math.round(min / 60);
+  if (h < 24) return plural(h, 'час', 'часа', 'часов');
+  return plural(Math.round(h / 24), 'день', 'дня', 'дней');
+}
+
+// Самая крупная картинка из превью чата (getItemInfo фото не отдаёт)
+function pickPhoto(images) {
+  const main = images && images.main;
+  if (!main || typeof main !== 'object') return null;
+  let best = null;
+  let bestArea = -1;
+  for (const [size, url] of Object.entries(main)) {
+    const m = /^(\d+)x(\d+)$/.exec(size);
+    const area = m ? Number(m[1]) * Number(m[2]) : 0;
+    if (area > bestArea) { bestArea = area; best = url; }
+  }
+  return best;
+}
+
+// Человекочитаемый статус объявления (getItemInfo.status — строка)
+const STATUS_LABELS = {
+  active: '🟢 активно',
+  old: '⚪️ в архиве',
+  removed: '🗑 снято',
+  blocked: '⛔ заблокировано',
+  rejected: '🚫 отклонено',
+  closed: '✅ продано',
+};
+function statusLabel(status) {
+  if (!status) return null;
+  return STATUS_LABELS[status] || status;
 }
 
 async function sendAvitoNotification(chat) {
@@ -81,12 +134,27 @@ async function sendAvitoNotification(chat) {
     text += '\n';
   }
 
-  // Мета диалога — всё это доступно без подписки на messenger-API
+  // Статус объявления — из getItemInfo (строка «active»/«old»/…), без подписки
+  let statusText = null;
+  if (item?.id) {
+    try {
+      const fullItem = await avito.getItemInfo(item.id);
+      statusText = statusLabel(fullItem?.status);
+    } catch {
+      // статус недоступен — не критично
+    }
+  }
+
+  // Мета диалога — всё доступно без подписки на messenger-API
   const city = item?.location?.title;
   if (city) text += `📍 *Город:* ${escapeMarkdown(city)}\n`;
-  if (chat.created) text += `🗓 *Диалог начат:* ${escapeMarkdown(formatDate(chat.created))}\n`;
+  if (statusText) text += `🏷 *Объявление:* ${escapeMarkdown(statusText)}\n`;
+  if (chat.created) {
+    text += `🗓 *Диалог начат:* ${escapeMarkdown(formatDate(chat.created))} \\(идёт ${escapeMarkdown(formatDuration(chat.created))}\\)\n`;
+  }
   if (chat.last_message?.created) {
-    text += `🕐 *Последнее сообщение:* ${escapeMarkdown(formatWhen(chat.last_message.created))}\n`;
+    const t = chat.last_message.created;
+    text += `🕐 *Последнее сообщение:* ${escapeMarkdown(relativeAgo(t))} · ${escapeMarkdown(absoluteTime(t))}\n`;
   }
 
   if (itemUrl) {
@@ -94,22 +162,13 @@ async function sendAvitoNotification(chat) {
   }
 
   const lastMsgText = chat.last_message?.content?.text;
-  // Без подписки на messenger-API Авито вместо текста сообщения отдаёт
-  // заглушку «Перейдите на подписку…» — не засоряем ей уведомление.
+  // Без подписки Авито вместо текста отдаёт заглушку — не показываем её.
   if (lastMsgText && !lastMsgText.includes('Перейдите на подписку')) {
     text += `\n💬 *Сообщение:*\n${escapeMarkdown(lastMsgText)}\n`;
   }
 
-  // Пробуем получить фото товара (этот эндпоинт не требует подписки)
-  let photoUrl = null;
-  if (item?.id) {
-    try {
-      const fullItem = await avito.getItemInfo(item.id);
-      photoUrl = fullItem?.images?.[0]?.url || null;
-    } catch {
-      // Фото недоступно — не критично
-    }
-  }
+  // Фото товара берём из превью чата (getItemInfo картинок не отдаёт)
+  const photoUrl = pickPhoto(item?.images);
 
   // Кнопка «Ответить» ведёт прямо в чат на Авито. Отвечать через API нельзя
   // без подписки на messenger, поэтому редиректим в веб-мессенджер Авито.
