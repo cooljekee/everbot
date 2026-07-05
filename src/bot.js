@@ -1,7 +1,12 @@
+const https = require('https');
 const { Telegraf } = require('telegraf');
 const avito = require('./avito');
 
-const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
+// keepAlive-агент: переиспользуем TCP-соединение к Telegram — стабильнее на
+// «моргающей» связи этого сервера, меньше обрывов запросов (и дублей карточек).
+const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN, {
+  telegram: { agent: new https.Agent({ keepAlive: true }) },
+});
 const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
 // /reply <chat_id> <текст> — ответить покупателю на Авито
