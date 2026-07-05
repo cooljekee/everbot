@@ -27,11 +27,12 @@ bot.command('status', (ctx) => {
   ctx.reply('✅ EverBot работает. Слушаю Авито.');
 });
 
-async function sendNotification(text, photoUrl = null, replyMarkup = null) {
+async function sendNotification(text, photo = null, replyMarkup = null) {
   const markup = replyMarkup ? { reply_markup: replyMarkup } : {};
   try {
-    if (photoUrl) {
-      await bot.telegram.sendPhoto(CHAT_ID, photoUrl, {
+    if (photo) {
+      const media = Buffer.isBuffer(photo) ? { source: photo } : photo;
+      await bot.telegram.sendPhoto(CHAT_ID, media, {
         caption: text,
         parse_mode: 'MarkdownV2',
         ...markup,

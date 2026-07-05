@@ -74,6 +74,16 @@ async function sendMessage(chatId, text) {
   );
 }
 
+// Скачиваем картинку сами (Telegram не может забрать её с CDN Авито).
+async function downloadImage(url) {
+  const res = await axios.get(url, {
+    responseType: 'arraybuffer',
+    timeout: 8000,
+    headers: { 'User-Agent': 'Mozilla/5.0' },
+  });
+  return Buffer.from(res.data);
+}
+
 async function subscribeWebhook(webhookUrl) {
   await getToken();
   const res = await api().post('/messenger/v3/webhook', {
@@ -82,4 +92,4 @@ async function subscribeWebhook(webhookUrl) {
   return res.data;
 }
 
-module.exports = { getChatMessages, getChat, getChats, getItemInfo, sendMessage, subscribeWebhook };
+module.exports = { getChatMessages, getChat, getChats, getItemInfo, sendMessage, subscribeWebhook, downloadImage };

@@ -167,8 +167,18 @@ async function sendAvitoNotification(chat) {
     text += `\n💬 *Сообщение:*\n${escapeMarkdown(lastMsgText)}\n`;
   }
 
-  // Фото товара берём из превью чата (getItemInfo картинок не отдаёт)
+  // Фото товара берём из превью чата (getItemInfo картинок не отдаёт).
+  // Telegram сам не может скачать картинку с CDN Авито — качаем байты сами
+  // и шлём файлом.
   const photoUrl = pickPhoto(item?.images);
+  let photo = null;
+  if (photoUrl) {
+    try {
+      photo = await avito.downloadImage(photoUrl);
+    } catch {
+      photo = null; // фото не критично — уйдёт текстом
+    }
+  }
 
   // Кнопка «Ответить» ведёт прямо в чат на Авито. Отвечать через API нельзя
   // без подписки на messenger, поэтому редиректим в веб-мессенджер Авито.
@@ -177,7 +187,7 @@ async function sendAvitoNotification(chat) {
     inline_keyboard: [[{ text: '↩️ Ответить на Авито', url: chatUrl }]],
   };
 
-  await sendNotification(text, photoUrl, replyMarkup);
+  await sendNotification(text, photo, replyMarkup);
 }
 
 function startPolling() {
