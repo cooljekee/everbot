@@ -88,13 +88,17 @@ async function deleteCard(messageId) {
 // --- Forum topics (подгруппы) ---
 
 async function createTopic(name) {
-  try {
-    const t = await bot.telegram.createForumTopic(CHAT_ID, name);
-    return t && t.message_thread_id ? t.message_thread_id : null;
-  } catch (err) {
-    console.error('createForumTopic error:', err.message);
-    return null;
+  // Telegram у этого сервера иногда моргает связью — ретраим.
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const t = await bot.telegram.createForumTopic(CHAT_ID, name);
+      return t && t.message_thread_id ? t.message_thread_id : null;
+    } catch (err) {
+      console.error(`createForumTopic error (попытка ${attempt}):`, err.message);
+      if (attempt < 3) await new Promise(r => setTimeout(r, 1500));
+    }
   }
+  return null;
 }
 
 async function closeTopic(threadId) {

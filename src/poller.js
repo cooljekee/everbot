@@ -64,6 +64,7 @@ async function handleClientMessage(chat, msgTime) {
   if (!topic) {
     const name = buildTopicName(chat);
     const threadId = await createTopic(name);
+    if (!threadId) return; // тему создать не удалось — не сохраняем, повторим на следующем поллинге
     topic = { threadId, name, closed: false, lastMsgTime: 0 };
     topicByChat.set(chat.id, topic);
   }
