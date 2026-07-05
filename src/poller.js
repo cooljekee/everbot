@@ -41,6 +41,27 @@ function escapeMarkdown(text) {
   return String(text).replace(/[_*[\]()~`>#+\-=|{}.!\\]/g, '\\$&');
 }
 
+// Дата вида «12 мая»
+function formatDate(sec) {
+  return new Date(sec * 1000).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' });
+}
+
+// Относительное время: «только что» / «5 мин назад» / «сегодня 14:20» / «вчера 09:15» / «12 мая 14:20»
+function formatWhen(sec) {
+  const then = sec * 1000;
+  const diffMin = Math.round((Date.now() - then) / 60000);
+  if (diffMin < 1) return 'только что';
+  if (diffMin < 60) return `${diffMin} мин назад`;
+  const d = new Date(then);
+  const today = new Date();
+  const time = d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+  if (d.toDateString() === today.toDateString()) return `сегодня ${time}`;
+  const y = new Date(today);
+  y.setDate(today.getDate() - 1);
+  if (d.toDateString() === y.toDateString()) return `вчера ${time}`;
+  return `${d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' })} ${time}`;
+}
+
 async function sendAvitoNotification(chat) {
   const item = chat.context?.value;
   const myUserId = String(process.env.AVITO_USER_ID);
@@ -58,6 +79,14 @@ async function sendAvitoNotification(chat) {
     text += `📦 *Товар:* ${itemTitle}`;
     if (itemPrice) text += ` — ${itemPrice}`;
     text += '\n';
+  }
+
+  // Мета диалога — всё это доступно без подписки на messenger-API
+  const city = item?.location?.title;
+  if (city) text += `📍 *Город:* ${escapeMarkdown(city)}\n`;
+  if (chat.created) text += `🗓 *Диалог начат:* ${escapeMarkdown(formatDate(chat.created))}\n`;
+  if (chat.last_message?.created) {
+    text += `🕐 *Последнее сообщение:* ${escapeMarkdown(formatWhen(chat.last_message.created))}\n`;
   }
 
   if (itemUrl) {
