@@ -58,7 +58,12 @@ async function handleNewMessage(chatId) {
   }
 
   const text = formatAvitoNotification(chat, messages, item);
-  await sendNotification(text, photoUrl);
+  // Кнопка «Ответить» → прямо в чат на Авито (веб-мессенджер).
+  const chatUrl = `https://www.avito.ru/profile/messenger/channel/${chatId}`;
+  const replyMarkup = {
+    inline_keyboard: [[{ text: '↩️ Ответить на Авито', url: chatUrl }]],
+  };
+  await sendNotification(text, photoUrl, replyMarkup);
 }
 
 module.exports = router;

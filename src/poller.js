@@ -65,11 +65,11 @@ async function sendAvitoNotification(chat) {
   }
 
   const lastMsgText = chat.last_message?.content?.text;
-  if (lastMsgText) {
+  // Без подписки на messenger-API Авито вместо текста сообщения отдаёт
+  // заглушку «Перейдите на подписку…» — не засоряем ей уведомление.
+  if (lastMsgText && !lastMsgText.includes('Перейдите на подписку')) {
     text += `\n💬 *Сообщение:*\n${escapeMarkdown(lastMsgText)}\n`;
   }
-
-  text += `\n↩️ /reply ${chat.id} текст`;
 
   // Пробуем получить фото товара (этот эндпоинт не требует подписки)
   let photoUrl = null;
@@ -82,7 +82,14 @@ async function sendAvitoNotification(chat) {
     }
   }
 
-  await sendNotification(text, photoUrl);
+  // Кнопка «Ответить» ведёт прямо в чат на Авито. Отвечать через API нельзя
+  // без подписки на messenger, поэтому редиректим в веб-мессенджер Авито.
+  const chatUrl = `https://www.avito.ru/profile/messenger/channel/${chat.id}`;
+  const replyMarkup = {
+    inline_keyboard: [[{ text: '↩️ Ответить на Авито', url: chatUrl }]],
+  };
+
+  await sendNotification(text, photoUrl, replyMarkup);
 }
 
 function startPolling() {
@@ -91,4 +98,4 @@ function startPolling() {
   setInterval(poll, POLL_INTERVAL);
 }
 
-module.exports = { startPolling };
+module.exports = { startPolling, sendAvitoNotification };

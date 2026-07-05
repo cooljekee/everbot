@@ -6,17 +6,19 @@ function formatAvitoNotification(chat, messages, item) {
   const itemPrice = item?.price ? `${item.price.toLocaleString('ru-RU')} ₽` : '';
   const itemUrl = item?.id ? `https://avito.ru/${item.id}` : '';
 
+  // Без подписки на messenger-API Авито отдаёт вместо текста заглушку —
+  // отбрасываем такие «сообщения», чтобы не показывать мусор.
+  const msgLines = lastMessages
+    .filter(msg => !(msg.content?.text || '').includes('Перейдите на подписку'))
+    .map(msg => formatMessage(msg, process.env.AVITO_USER_ID));
+
   const lines = [
     `🛍 *Новое сообщение с Авито*`,
     ``,
     `👤 *Покупатель:* ${escapeMarkdown(buyerName)}`,
     `📦 *Товар:* ${escapeMarkdown(itemTitle)}${itemPrice ? ` — ${itemPrice}` : ''}`,
     itemUrl ? `🔗 [Открыть объявление](${itemUrl})` : '',
-    ``,
-    `💬 *Последние сообщения:*`,
-    ...lastMessages.map(msg => formatMessage(msg, process.env.AVITO_USER_ID)),
-    ``,
-    `↩️ Чтобы ответить, напиши: \`/reply ${chat.id} текст ответа\``,
+    ...(msgLines.length ? ['', `💬 *Последние сообщения:*`, ...msgLines] : []),
   ];
 
   return lines.filter(l => l !== '').join('\n');

@@ -27,17 +27,20 @@ bot.command('status', (ctx) => {
   ctx.reply('✅ EverBot работает. Слушаю Авито.');
 });
 
-async function sendNotification(text, photoUrl = null) {
+async function sendNotification(text, photoUrl = null, replyMarkup = null) {
+  const markup = replyMarkup ? { reply_markup: replyMarkup } : {};
   try {
     if (photoUrl) {
       await bot.telegram.sendPhoto(CHAT_ID, photoUrl, {
         caption: text,
         parse_mode: 'MarkdownV2',
+        ...markup,
       });
     } else {
       await bot.telegram.sendMessage(CHAT_ID, text, {
         parse_mode: 'MarkdownV2',
         disable_web_page_preview: false,
+        ...markup,
       });
     }
   } catch (err) {
@@ -46,6 +49,7 @@ async function sendNotification(text, photoUrl = null) {
     if (err.message.includes('parse')) {
       await bot.telegram.sendMessage(CHAT_ID, text.replace(/[*_`[\]]/g, ''), {
         disable_web_page_preview: false,
+        ...markup,
       });
     }
   }
