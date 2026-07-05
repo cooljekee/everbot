@@ -31,7 +31,7 @@ function persistCards() {
 
 async function poll() {
   try {
-    const chats = await avito.getChats(10);
+    const chats = await avito.getChats(50);
     const myUserId = String(process.env.AVITO_USER_ID);
 
     for (const chat of chats) {
