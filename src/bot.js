@@ -22,9 +22,13 @@ bot.command('reply', async (ctx) => {
   }
 });
 
-// /status — проверить что бот живой
+// /status — проверить что бот живой + показать chat_id (нужно после включения тем)
 bot.command('status', (ctx) => {
-  ctx.reply('✅ EverBot работает. Слушаю Авито.');
+  console.log('CHAT INFO → id:', ctx.chat.id, '| type:', ctx.chat.type, '| is_forum:', ctx.chat.is_forum);
+  ctx.reply(
+    `✅ EverBot работает.\nchat_id: \`${ctx.chat.id}\`\nтип: ${ctx.chat.type}\nфорум: ${Boolean(ctx.chat.is_forum)}`,
+    { parse_mode: 'Markdown' }
+  );
 });
 
 // Возвращает message_id отправленной карточки (или null). opts.silent — без звука.
