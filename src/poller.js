@@ -5,6 +5,10 @@ const { sendNotification, deleteCard, editCard } = require('./bot');
 
 const POLL_INTERVAL = 30_000;
 const STATE_FILE = path.join(__dirname, '..', 'cards.json');
+// Показываем только неотвеченные диалоги за последние N дней — старые (клиент
+// писал недели назад) не актуальны и только засоряют чат.
+const MAX_AGE_DAYS = 7;
+const MAX_AGE_MS = MAX_AGE_DAYS * 24 * 60 * 60 * 1000;
 
 // chat_id -> { messageId, lastMsgTime, count, isPhoto }
 // Одна карточка на неотвеченный чат в общем чате. Каждое новое сообщение
@@ -44,6 +48,13 @@ async function poll() {
 
       if (isFromMe) {
         // Ты ответил в Авито → удалить карточку (диалог обработан)
+        if (card) await clearCard(chat.id);
+        continue;
+      }
+
+      // Старое сообщение (клиент писал давно) → диалог не актуален: карточку не
+      // создаём, а если висит — убираем.
+      if (Date.now() - msgTime > MAX_AGE_MS) {
         if (card) await clearCard(chat.id);
         continue;
       }
