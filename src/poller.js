@@ -1,9 +1,31 @@
+const fs = require('fs');
+const path = require('path');
 const avito = require('./avito');
-const { sendNotification } = require('./bot');
+const { sendNotification, createTopic, closeTopic, reopenTopic } = require('./bot');
 
 const POLL_INTERVAL = 30_000;
-const notifiedChats = new Map(); // chat_id -> last message timestamp
-let initialized = false;
+const TOPICS_FILE = path.join(__dirname, '..', 'topics.json');
+
+// chat_id -> { threadId, name, closed, lastMsgTime }
+// Персистим на диск, чтобы переживать рестарт (не пересоздавать темы).
+const topicByChat = loadTopics();
+let firstPoll = true;
+
+function loadTopics() {
+  try {
+    return new Map(Object.entries(JSON.parse(fs.readFileSync(TOPICS_FILE, 'utf8'))));
+  } catch {
+    return new Map();
+  }
+}
+
+function persistTopics() {
+  try {
+    fs.writeFileSync(TOPICS_FILE, JSON.stringify(Object.fromEntries(topicByChat)));
+  } catch (err) {
+    console.error('topics persist error:', err.message);
+  }
+}
 
 async function poll() {
   try {
@@ -13,28 +35,81 @@ async function poll() {
     for (const chat of chats) {
       const lastMsg = chat.last_message;
       if (!lastMsg) continue;
-      if (String(lastMsg.author_id) === myUserId) continue;
 
+      const isFromMe = String(lastMsg.author_id) === myUserId;
       const msgTime = lastMsg.created * 1000;
-      const lastNotified = notifiedChats.get(chat.id);
+      const topic = topicByChat.get(chat.id);
 
-      if (!initialized) {
-        notifiedChats.set(chat.id, msgTime);
+      if (isFromMe) {
+        // Ты ответил в Авито → закрыть тему (диалог обработан)
+        if (topic && !topic.closed) await closeChatTopic(chat.id);
         continue;
       }
 
-      if (lastNotified && lastNotified >= msgTime) continue;
+      // Сообщение от клиента. Пропускаем, если это же сообщение уже обработано.
+      if (topic && topic.lastMsgTime >= msgTime) continue;
 
-      notifiedChats.set(chat.id, msgTime);
-      sendAvitoNotification(chat).catch(err =>
-        console.error('Poller notify error:', err.message)
-      );
+      await handleClientMessage(chat, msgTime);
     }
   } catch (err) {
     console.error('Poll error:', err.message);
   }
+  firstPoll = false;
+}
 
-  initialized = true;
+// Новое сообщение клиента → в его тему (создаём/переоткрываем при необходимости)
+async function handleClientMessage(chat, msgTime) {
+  let topic = topicByChat.get(chat.id);
+
+  if (!topic) {
+    const name = buildTopicName(chat);
+    const threadId = await createTopic(name);
+    topic = { threadId, name, closed: false, lastMsgTime: 0 };
+    topicByChat.set(chat.id, topic);
+  }
+
+  // Новая тема или возврат клиента после твоего ответа → полная карточка + звук.
+  const wasClosedOrNew = topic.closed || topic.lastMsgTime === 0;
+
+  if (topic.closed && topic.threadId) {
+    await reopenTopic(topic.threadId);
+    topic.closed = false;
+  }
+
+  if (wasClosedOrNew) {
+    const { text, photo, replyMarkup } = await buildCard(chat);
+    await sendNotification(text, photo, replyMarkup, {
+      threadId: topic.threadId,
+      silent: firstPoll, // популяция при старте — тихо; обычный новый диалог — со звуком
+    });
+  } else {
+    // Идущий диалог — короткий тихий бамп в ту же тему
+    const when = chat.last_message?.created ? absoluteTime(chat.last_message.created) : '';
+    const line = `💬 *Ещё сообщение*${when ? ` · ${escapeMarkdown(when)}` : ''}`;
+    await sendNotification(line, null, null, { threadId: topic.threadId, silent: true });
+  }
+
+  topic.lastMsgTime = msgTime;
+  persistTopics();
+}
+
+// Ты ответил → закрываем тему чата
+async function closeChatTopic(chatId) {
+  const topic = topicByChat.get(chatId);
+  if (!topic || topic.closed) return;
+  if (topic.threadId) await closeTopic(topic.threadId);
+  topic.closed = true;
+  persistTopics();
+}
+
+// Имя темы: «Павел · Кардиган-куртка» (обычный текст, ≤128 символов)
+function buildTopicName(chat) {
+  const myUserId = String(process.env.AVITO_USER_ID);
+  const buyer = chat.users?.find(u => String(u.id) !== myUserId);
+  const item = chat.context?.value;
+  let name = `${buyer?.name || 'Покупатель'} · ${item?.title || 'Товар'}`;
+  if (name.length > 100) name = `${name.slice(0, 99)}…`;
+  return name;
 }
 
 function escapeMarkdown(text) {
@@ -115,7 +190,8 @@ function statusLabel(status) {
   return STATUS_LABELS[status] || status;
 }
 
-async function sendAvitoNotification(chat) {
+// Собирает карточку диалога: { text, photo, replyMarkup }
+async function buildCard(chat) {
   const item = chat.context?.value;
   const myUserId = String(process.env.AVITO_USER_ID);
   const buyer = chat.users?.find(u => String(u.id) !== myUserId);
@@ -168,8 +244,7 @@ async function sendAvitoNotification(chat) {
   }
 
   // Фото товара берём из превью чата (getItemInfo картинок не отдаёт).
-  // Telegram сам не может скачать картинку с CDN Авито — качаем байты сами
-  // и шлём файлом.
+  // Telegram сам не тянет картинку с CDN Авито — качаем байты сами и шлём файлом.
   const photoUrl = pickPhoto(item?.images);
   let photo = null;
   if (photoUrl) {
@@ -180,14 +255,18 @@ async function sendAvitoNotification(chat) {
     }
   }
 
-  // Кнопка «Ответить» ведёт прямо в чат на Авито. Отвечать через API нельзя
-  // без подписки на messenger, поэтому редиректим в веб-мессенджер Авито.
   const chatUrl = `https://www.avito.ru/profile/messenger/channel/${chat.id}`;
   const replyMarkup = {
     inline_keyboard: [[{ text: '↩️ Ответить на Авито', url: chatUrl }]],
   };
 
-  await sendNotification(text, photo, replyMarkup);
+  return { text, photo, replyMarkup };
+}
+
+// Совместимость с тестами: отправить карточку по чату вручную
+async function sendAvitoNotification(chat) {
+  const msgTime = (chat.last_message?.created || 0) * 1000 || Date.now();
+  await handleClientMessage(chat, msgTime);
 }
 
 function startPolling() {
